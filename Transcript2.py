@@ -1,0 +1,512 @@
+"""
+Streamlit App for Meeting Minutes Generator
+User interface and interaction handling.
+"""
+
+import streamlit as st
+
+st.set_page_config(
+    page_title="Meeting Minutes Generator",
+    page_icon="📝",
+    layout="wide"
+)
+
+import logging
+import subprocess
+import json
+from meeting_processor import create_meeting_processor
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+@st.cache_data(ttl=30)  # Cache for 30 seconds to reduce API calls
+def get_available_ollama_models():
+    """Get list of available Ollama models."""
+    try:
+        result = subprocess.run(['ollama', 'list'], capture_output=True, text=True, timeout=10)
+        if result.returncode == 0:
+            lines = result.stdout.strip().split('\n')[1:]  # Skip header
+            models = []
+            for line in lines:
+                if line.strip():
+                    model_name = line.split()[0]
+                    if ':' not in model_name:
+                        model_name += ':latest'
+                    models.append(model_name)
+            return sorted(models) if models else ["qwen3:4b"]
+        else:
+            logger.error(f"Ollama list command failed: {result.stderr}")
+            return ["qwen3:4b"]
+    except subprocess.TimeoutExpired:
+        logger.error("Ollama command timed out")
+        return ["qwen3:4b"]
+    except FileNotFoundError:
+        logger.error("Ollama not found in PATH")
+        return ["qwen3:4b"]
+    except Exception as e:
+        logger.error(f"Error getting Ollama models: {e}")
+        return ["qwen3:4b"]
+
+def display_model_configuration():
+    """Display model configuration in sidebar."""
+    with st.sidebar:
+        st.markdown("### 🤖 Model Configuration")
+        
+        # Get available models
+        try:
+            available_models = get_available_ollama_models()
+            if not available_models:
+                st.error("❌ No Ollama models found!")
+                st.info("Install a model first:")
+                st.code("ollama pull qwen3:4b")
+                available_models = ["qwen3:4b"]
+        except Exception as e:
+            st.error(f"❌ Ollama connection error: {e}")
+            st.info("Make sure Ollama is running:")
+            st.code("ollama serve")
+            available_models = ["qwen3:4b"]
+        
+        # Model selection
+        selected_model = st.selectbox(
+            "Select Model",
+            options=available_models,
+            index=0,
+            help="Choose from your installed Ollama models"
+        )
+        
+        # Model info
+        if selected_model:
+            st.success(f"✅ Using **{selected_model}**")
+            
+            # Model recommendations
+            if "qwen" in selected_model.lower():
+                st.info("🎯 **Qwen models**: Great for text analysis and extraction tasks")
+            elif "llama" in selected_model.lower():
+                st.info("🦙 **Llama models**: Excellent general-purpose performance")
+            elif "mistral" in selected_model.lower():
+                st.info("⚡ **Mistral models**: Fast and efficient processing")
+            elif "gemma" in selected_model.lower():
+                st.info("💎 **Gemma models**: High-quality Google models")
+        
+        # Advanced settings
+        with st.expander("⚙️ Advanced Settings"):
+            timeout = st.slider(
+                "Timeout (seconds)",
+                min_value=30,
+                max_value=300,
+                value=60,
+                step=30,
+                help="Maximum time to wait for model response"
+            )
+            
+            st.info("💡 **Model Suggestions for Meeting Minutes:**")
+            st.markdown("""
+            - **qwen3:4b** - Fast, good quality
+            - **llama3.1:8b** - Balanced performance  
+            - **mistral:7b** - Very fast processing
+            - **gemma2:9b** - High accuracy
+            """)
+        
+        return selected_model, timeout
+
+@st.cache_resource
+def initialize_processor(_model_name="qwen3:4b", _timeout=60):
+    """Initialize the meeting processor with caching."""
+    try:
+        processor = create_meeting_processor(model_name=_model_name, timeout=_timeout)
+        logger.info(f"Meeting processor initialized successfully with {_model_name}")
+        return processor
+    except Exception as e:
+        logger.error(f"Failed to initialize processor: {e}")
+        st.error(f"Failed to initialize the AI system: {e}")
+        st.stop()
+
+def create_export_content(results: dict) -> str:
+    """Create exportable markdown content from results."""
+    return f"""# Meeting Minutes
+
+## Summary
+{results.get("summary", "No summary available.")}
+
+## Action Items
+{results.get("action_items", "No action items found.")}
+
+## Key Decisions
+{results.get("decisions", "No decisions found.")}
+
+---
+*Generated by Meeting Minutes AI Assistant*
+"""
+
+def display_results(results: dict) -> None:
+    """Display the processing results in organized tabs."""
+    st.success("✅ Meeting minutes generated successfully!")
+    
+    # Add a summary stats bar
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Summary", "Generated", delta="Complete")
+    with col2:
+        action_items_count = results.get("action_items", "").count("- ") + results.get("action_items", "").count("* ")
+        st.metric("Action Items", f"{action_items_count}", delta="Extracted")
+    with col3:
+        decisions_count = results.get("decisions", "").count("- ") + results.get("decisions", "").count("* ")
+        st.metric("Key Decisions", f"{decisions_count}", delta="Identified")
+    
+    st.markdown("---")
+    
+    # Create tabs for better organization
+    tab1, tab2, tab3, tab4 = st.tabs(["📋 Summary", "✅ Action Items", "🎯 Decisions", "📄 Full Report"])
+    
+    with tab1:
+        st.markdown("### 📋 Meeting Summary")
+        summary = results.get("summary", "No summary could be generated.")
+        
+        # Display in a nice container
+        with st.container():
+            st.markdown(f"""
+            <div style="background-color: linear-gradient(90deg, #667eea 0%, #764ba2 100%); padding: 20px; border-radius: 10px; border-left: 4px solid #007bff;">
+                <p style="margin: 0; font-size: 16px; line-height: 1.6;">{summary}</p>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        # Copy button for summary
+        with st.expander("📄 Copy Summary Text"):
+            st.code(summary, language=None)
+    
+    with tab2:
+        st.markdown("### ✅ Action Items")
+        action_items = results.get("action_items", "No action items could be found.")
+        
+        # Display with better formatting
+        if action_items and "No action items" not in action_items:
+            st.markdown(action_items)
+        else:
+            st.info("ℹ️ No specific action items were identified in this meeting transcript.")
+        
+        with st.expander("📄 Copy Action Items Text"):
+            st.code(action_items, language=None)
+    
+    with tab3:
+        st.markdown("### 🎯 Key Decisions")
+        decisions = results.get("decisions", "No decisions could be found.")
+        
+        # Display with better formatting
+        if decisions and "No decisions" not in decisions:
+            st.markdown(decisions)
+        else:
+            st.info("ℹ️ No specific decisions were identified in this meeting transcript.")
+        
+        with st.expander("📄 Copy Decisions Text"):
+            st.code(decisions, language=None)
+    
+    with tab4:
+        st.markdown("### 📄 Complete Meeting Minutes")
+        full_report = create_export_content(results)
+        st.markdown(full_report)
+
+def display_export_options(results: dict) -> None:
+    """Display export functionality."""
+    st.markdown("---")
+    st.markdown("### 📤 Export & Share")
+    
+    export_content = create_export_content(results)
+    
+    col1, col2, col3 = st.columns([1, 1, 1])
+    
+    with col1:
+        st.download_button(
+            label="📥 Download Markdown",
+            data=export_content,
+            file_name=f"meeting_minutes_{st.session_state.get('timestamp', 'export')}.md",
+            mime="text/markdown",
+            use_container_width=True,
+            help="Download as .md file for documentation"
+        )
+    
+    with col2:
+        # Create plain text version
+        plain_text = export_content.replace("#", "").replace("*", "").replace("-", "•")
+        st.download_button(
+            label="📄 Download Text",
+            data=plain_text,
+            file_name=f"meeting_minutes_{st.session_state.get('timestamp', 'export')}.txt",
+            mime="text/plain",
+            use_container_width=True,
+            help="Download as plain text file"
+        )
+    
+    with col3:
+        if st.button("📋 Show Copy Text", use_container_width=True, help="Show formatted text for copying"):
+            st.session_state.show_copy_text = not st.session_state.get('show_copy_text', False)
+    
+    # Show copy text if requested
+    if st.session_state.get('show_copy_text', False):
+        with st.expander("📋 Copy Text", expanded=True):
+            st.code(export_content, language="markdown")
+            st.caption("Select all text above and copy to clipboard")
+
+def display_sidebar_info(processor, selected_model) -> None:
+    """Display information in the sidebar."""
+    with st.sidebar:
+        st.markdown("---")
+        st.markdown("### ℹ️ System Information")
+        
+        model_info = processor.get_model_info()
+        st.success(f"""
+        **Model**: {selected_model}  
+        **Status**: {model_info['status']}  
+        **Timeout**: {model_info['timeout']}s
+        """)
+        
+        st.markdown("### 💡 Tips for Best Results")
+        st.markdown("""
+        - Include participant names when mentioned
+        - Ensure the transcript is complete
+        - Include any specific deadlines or dates
+        - Keep formatting simple (plain text works best)
+        - Use clear, conversational language
+        """)
+        
+        st.markdown("### 🔧 Troubleshooting")
+        with st.expander("Common Issues"):
+            st.markdown(f"""
+            **Model not loading?**
+            - Ensure Ollama is running: `ollama serve`
+            - Check if {selected_model} is installed: `ollama list`
+            - Try restarting the application
+            
+            **Slow processing?**
+            - Large transcripts take more time
+            - Try a smaller/faster model (e.g., mistral:7b)
+            - Check your system resources
+            
+            **Poor results?**
+            - Try a larger model (e.g., llama3.1:8b)
+            - Ensure transcript quality is good
+            - Remove unnecessary filler words
+            - Check for complete sentences
+            """)
+
+def main():
+    """Main application function."""
+    # Initialize session state
+    if 'show_copy_text' not in st.session_state:
+        st.session_state.show_copy_text = False
+    if 'timestamp' not in st.session_state:
+        import datetime
+        st.session_state.timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    if 'generated_results' not in st.session_state:
+        st.session_state.generated_results = None
+    if 'processed_transcript' not in st.session_state:
+        st.session_state.processed_transcript = ""
+    
+    # Header section
+    st.title("📝 Meeting Minutes Generator")
+    st.markdown("""
+    <div style="background: linear-gradient(90deg, #667eea 0%, #764ba2 100%); padding: 20px; border-radius: 10px; margin-bottom: 20px;">
+        <h3 style="color: white; margin: 0;">Transform your meeting transcripts into organized minutes</h3>
+        <p style="color: #f0f0f0; margin: 5px 0 0 0;">AI-powered analysis for professional meeting documentation</p>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # Feature highlights
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.markdown("""
+        <div style="text-align: center; padding: 15px;">
+            <h4>📋 Smart Summary</h4>
+            <p>Concise overview of key discussion points</p>
+        </div>
+        """, unsafe_allow_html=True)
+    with col2:
+        st.markdown("""
+        <div style="text-align: center; padding: 15px;">
+            <h4>✅ Action Tracking</h4>
+            <p>Extract tasks with assignees and deadlines</p>
+        </div>
+        """, unsafe_allow_html=True)
+    with col3:
+        st.markdown("""
+        <div style="text-align: center; padding: 15px;">
+            <h4>🎯 Decision Log</h4>
+            <p>Capture important agreements and conclusions</p>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    st.markdown("---")
+    
+    # Model configuration in sidebar
+    selected_model, timeout = display_model_configuration()
+    
+    # Initialize processor with selected model
+    processor = initialize_processor(_model_name=selected_model, _timeout=timeout)
+    
+    # Display sidebar information
+    display_sidebar_info(processor, selected_model)
+    
+    # Input section with better styling
+    st.markdown("### 📝 Input Your Meeting Transcript")
+    
+    # Create columns for better layout
+    col1, col2 = st.columns([3, 1])
+    
+    with col1:
+        # Use sample transcript if available
+        default_value = st.session_state.get('sample_transcript', '')
+        
+        transcript_input = st.text_area(
+            "Meeting Transcript", 
+            height=350,
+            value=default_value,
+            placeholder="Paste your meeting transcript here...\n\nExample:\n[10:00 AM] John: Let's start with the project updates...\n[10:05 AM] Sarah: I've completed the design mockups...",
+            help="Copy and paste the text from your meeting recording, notes, or automated transcript.",
+            label_visibility="collapsed"
+        )
+        
+        # Character count with color coding
+        char_count = len(transcript_input) if transcript_input else 0
+        if char_count == 0:
+            color = "gray"
+        elif char_count < 20:
+            color = "orange" 
+        elif char_count > 45000:
+            color = "red"
+        else:
+            color = "green"
+        
+        st.markdown(f'<p style="color: {color};">Characters: {char_count:,}/50,000</p>', unsafe_allow_html=True)
+    
+    with col2:
+        st.markdown("### 💡 Quick Tips")
+        
+        # Status indicator
+        if char_count == 0:
+            st.info("📝 Ready for transcript")
+        elif char_count < 20:
+            st.warning("⚠️ Transcript too short")
+        elif char_count > 45000:
+            st.error("❌ Transcript too long")
+        else:
+            st.success("✅ Transcript ready")
+        
+        st.markdown("""
+        **For best results:**
+        - Include speaker names
+        - Keep timestamps if available  
+        - Include complete conversations
+        - Remove unnecessary filler words
+        - Ensure clear formatting
+        """)
+        
+        # Sample transcript button
+        if st.button("📋 Load Sample", use_container_width=True, help="Load a sample transcript to try the app"):
+            st.session_state.sample_transcript = """[10:00 AM] Project Manager Sarah: Good morning everyone. Let's start our Project Alpha kickoff meeting.
+
+[10:01 AM] Lead Developer Mark: Hi Sarah, I've reviewed the requirements document.
+
+[10:02 AM] Marketing Specialist Jessica: Hello everyone, excited to get started.
+
+[10:03 AM] Sarah: Great! Today we need to align on project scope, timeline, and immediate action items.
+
+[10:04 AM] Mark: For the technical side, I'm proposing we use OAuth 2.0 for the user authentication system. It's the most secure and scalable option.
+
+[10:06 AM] Sarah: Mark, can you have the detailed technical specification ready by Friday?
+
+[10:07 AM] Mark: Absolutely, I'll coordinate with the database team to ensure we have access to the necessary tables.
+
+[10:08 AM] Jessica: For marketing, I'll focus on creating a landing page and social media posts highlighting our security features.
+
+[10:10 AM] Sarah: Jessica, please have the initial marketing messages drafted by Friday as well.
+
+[10:11 AM] Jessica: I can do that. I'll also need to get final design approval from our creative team by the end of next week.
+
+[10:15 AM] Sarah: Perfect. So we're aiming for a soft launch in six weeks. Does everyone agree with the OAuth 2.0 approach?
+
+[10:16 AM] Mark: Agreed.
+
+[10:16 AM] Jessica: Agreed.
+
+[10:18 AM] Sarah: Excellent. My action item is to create and share the project brief with the wider team tomorrow.
+
+[10:20 AM] Mark: Sounds like a plan.
+
+[10:21 AM] Sarah: Let's reconvene on Friday morning to review Mark and Jessica's deliverables.
+
+[10:25 AM] Meeting ended."""
+            st.rerun()
+    
+    # Use sample transcript if loaded
+    if 'sample_loaded' in st.session_state:
+        transcript_input = st.session_state.sample_loaded
+        del st.session_state.sample_loaded
+        st.rerun()
+    
+    # Generate button with better styling
+    st.markdown("### 🚀 Generate Meeting Minutes")
+    
+    col_btn1, col_btn2, col_btn3 = st.columns([1, 2, 1])
+    with col_btn2:
+        generate_clicked = st.button(
+            "🚀 Generate Minutes", 
+            type="primary", 
+            use_container_width=True,
+            disabled=(char_count == 0)
+        )
+    
+    # Show previous results if available and transcript hasn't changed
+    if (st.session_state.generated_results is not None and 
+        st.session_state.processed_transcript == transcript_input and 
+        transcript_input.strip() != ""):
+        
+        st.markdown("---")
+        st.info("📋 Showing previously generated results. Click 'Generate Minutes' again to regenerate.")
+        display_results(st.session_state.generated_results)
+        display_export_options(st.session_state.generated_results)
+        return
+    
+    if generate_clicked:
+        # Validate input
+        is_valid, error_message = processor.validate_transcript(transcript_input)
+        
+        if not is_valid:
+            st.warning(error_message)
+            return
+        
+        # Process transcript
+        try:
+            with st.spinner("🔄 Analyzing transcript and generating meeting minutes..."):
+                results = processor.process_transcript(transcript_input)
+            
+            # Store results in session state to persist them
+            st.session_state.generated_results = results
+            st.session_state.processed_transcript = transcript_input
+            
+            # Display results
+            display_results(results)
+            
+            # Export options
+            display_export_options(results)
+            
+        except Exception as e:
+            st.error(f"❌ An error occurred while processing your transcript: {str(e)}")
+            logger.error(f"Processing error: {e}")
+            
+            with st.expander("🔍 Troubleshooting Help"):
+                st.markdown("""
+                **This error might be caused by:**
+                - Ollama service not running
+                - Model not properly installed
+                - Network connectivity issues
+                - Transcript formatting problems
+                
+                **Try these solutions:**
+                1. Restart Ollama service
+                2. Check model installation: `ollama list`
+                3. Verify network connection
+                4. Simplify transcript formatting
+                """)
+
+if __name__ == "__main__":
+    main()
